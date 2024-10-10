@@ -52,70 +52,112 @@ function HTTPDaemon(parent) {
     $ = globals.$
     oNode = globals.$.oNode
 
-    if (this.socket.canReadLine()) {
-      status_line = this.socket.readLine().toString().trim()
-      status_line_split = status_line.split(' ')
-      request = {
-        method: status_line_split[0],
-        url: new QUrl(status_line_split[1]),
-        protocol: status_line_split[2]
-      }
+    try
+    {
+      if (this.socket.canReadLine()) {
+        status_line = this.socket.readLine().toString().trim()
+        status_line_split = status_line.split(' ')
 
-      log = 'INFO:  "' + status_line + '" '
+        request = {
+          method: status_line_split[0],
+          url: new QUrl(status_line_split[1]),
+          protocol: status_line_split[2]
+        }
 
-      if (this.routes.hasOwnProperty(request.url.path())) {
-        if (
-          this.routes[request.url.path()]['methods'].indexOf(request.method) >=
-          0
-        ) {
-          try {
-            result = this.routes[request.url.path()]['afunction'](
-              request.method,
-              request.url
-            )
-            this.socket.write(new QByteArray('HTTP/1.1 200 Ok\r\n'))
-            log = log + '200 OK'
-          } catch (e) {
-            result = { detail: e.name + ' : ' + e.message }
-            $.log('ERROR:  "' + e.name + ' : ' + e.message)
-            if (e instanceof globals.HTTPExceptions.MissingQueryError) {
-              this.socket.write(
-                new QByteArray('HTTP/1.1 422 Unprocessable Entity\r\n')
-              )
-              log = log + '422 Unprocessable Entity'
-            } else {
-              this.socket.write(
-                new QByteArray('HTTP/1.1 500 Internal Server Error\r\n')
-              )
-              log = log + '500 Internal Server Error'
+        log = 'INFO:  "' + status_line + '" '
+
+        if( !request.url.path )
+        {
+          var regex = /^(https?:\/\/[^\/]+)?(\/[^?]*)?(\?.*)?$/
+          var matches = status_line_split[1].match( regex )
+
+          $.log(matches)
+
+          request.url.path = function()
+          {
+            return matches.length <= 2 ? "" : matches[2]
+          }
+
+          request.url.query = function()
+          {
+            return matches.length <= 3 ? "" : matches[3]
+          }
+
+          request.url.queryItemValue = function(item)
+          {
+            if ( !matches.length <= 3) {
+              items = matches[3].substring(1).split("&")
+              for (var n = 0; n < items.length; n++) {
+                var itemValue = items[n].split("=")
+                if (itemValue[0] == item) {
+                  return decodeURIComponent(itemValue[1])
+                }
+              }
             }
+            return ""
+          }
+
+        }
+
+        //There are missing tools in QUrl bindings in Harmony 22+, using a regexp to replace those for now.
+        if (this.routes.hasOwnProperty(request.url.path())) {
+          if (
+            this.routes[request.url.path()]['methods'].indexOf(request.method) >=
+            0
+          ) {
+            try {
+              result = this.routes[request.url.path()]['afunction'](
+                request.method,
+                request.url
+              )
+              this.socket.write(new QByteArray('HTTP/1.1 200 Ok\r\n'))
+              log = log + '200 OK'
+            } catch (e) {
+              result = { detail: e.name + ' : ' + e.message }
+              $.log('ERROR:  "' + e.name + ' : ' + e.message)
+              if (e instanceof globals.HTTPExceptions.MissingQueryError) {
+                this.socket.write(
+                  new QByteArray('HTTP/1.1 422 Unprocessable Entity\r\n')
+                )
+                log = log + '422 Unprocessable Entity'
+              } else {
+                this.socket.write(
+                  new QByteArray('HTTP/1.1 500 Internal Server Error\r\n')
+                )
+                log = log + '500 Internal Server Error'
+              }
+            }
+          } else {
+            this.socket.write(new QByteArray('HTTP/1.1 501 Not Implemented\r\n'))
+            log = log + '501 Not Implemented'
+            result = { detail: 'Not Implemented' }
           }
         } else {
-          this.socket.write(new QByteArray('HTTP/1.1 501 Not Implemented\r\n'))
-          log = log + '501 Not Implemented'
-          result = { detail: 'Not Implemented' }
+          this.socket.write(new QByteArray('HTTP/1.1 404 Not Found\r\n'))
+          log = log + '404 Not Found'
+          result = { detail: 'Not Found' }
         }
-      } else {
-        this.socket.write(new QByteArray('HTTP/1.1 404 Not Found\r\n'))
-        log = log + '404 Not Found'
-        result = { detail: 'Not Found' }
+
+        this.socket.write(
+          new QByteArray('Content-Type: application/json; charset="utf-8"\r\n')
+        )
+        this.socket.write(new QByteArray('\r\n'))
+        this.socket.write(new QByteArray(JSON.stringify(result)))
+
+        $.log(log)
+
+        this.socket.close()
+
+        if (this.socket.state() == QAbstractSocket.UnconnectedState) {
+          this.socket.deleteLater()
+        }
+
+        this.lock = false
       }
-
-      this.socket.write(
-        new QByteArray('Content-Type: application/json; charset="utf-8"\r\n')
-      )
-      this.socket.write(new QByteArray('\r\n'))
-      this.socket.write(new QByteArray(JSON.stringify(result)))
-
-      $.log(log)
-
-      this.socket.close()
-
-      if (this.socket.state() == QAbstractSocket.UnconnectedState) {
-        this.socket.deleteLater()
-      }
-
-      this.lock = false
+    }
+    catch(err)
+    {
+      MessageLog.trace( "ReadClient Error: " + err)
     }
   }
 
@@ -140,11 +182,12 @@ function HTTPDaemon(parent) {
     return
   }
 
+  var hasIncomingConnectionOverride = this.incomingConnection !== undefined
+
   this.incomingConnection = function (socket) {
     if (this.disabled) {
       return
     }
-
     if (this.lock === true) {
       this.waitForLock()
     }
@@ -154,7 +197,30 @@ function HTTPDaemon(parent) {
     this.socket.disconnected.connect(this, 'discardClient')
     this.socket.setSocketDescriptor(socket)
   }
+
+  if( !hasIncomingConnectionOverride )
+  {
+    var localServerBind = this
+    this.acceptNewConnection = function()
+    {
+      try
+      {
+        socket = localServerBind.nextPendingConnection()
+
+        localServerBind.socket = socket
+
+        socket.readyRead.connect( localServerBind, 'readClient' )
+        socket.disconnected.connect( localServerBind, 'discardClient' )
+      }
+      catch(err)
+      {
+        MessageLog.trace( "New Connection Error: " + err )
+      }
+    }
+    this.newConnection.connect( this.acceptNewConnection )
+  }
 }
+
 HTTPDaemon.prototype = Object.create(QTcpServer.prototype)
 HTTPDaemon.prototype.constructor = HTTPDaemon
 

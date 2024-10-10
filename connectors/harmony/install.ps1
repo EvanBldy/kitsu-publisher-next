@@ -4,7 +4,7 @@ param (
     [switch]$noprompt = $false
  )
 
-$open_harmony_zip_url = "https://github.com/cfourney/OpenHarmony/archive/refs/tags/0.10.3.zip"
+$open_harmony_zip_url = "https://github.com/cfourney/OpenHarmony/archive/refs/tags/0.10.18.zip"
 $harmony_app_data_folder = [IO.Path]::Combine($env:APPDATA, "Toon Boom Animation")
 
 function ConvertTo-Boolean {
